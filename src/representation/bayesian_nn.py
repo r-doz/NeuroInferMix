@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from representation.operations import layer_forward_gmm
+from representation.operations_advanced_pruning import layer_forward_gmm
 
 class BayesLinearGMM(nn.Module):
     """
@@ -111,7 +111,7 @@ class BNN_GMM(nn.Module):
                 main_comp=main_comp
             )
 
-    def forward(self, pi_x, mu_x, sg_x, eps: float | None = None, last_relu: bool = False):
+    def forward(self, pi_x, mu_x, sg_x, eps: float | None = None, last_relu: bool = False, max_components=None):
         """
         Full mixture forward through all Bayesian layers.
 
@@ -137,7 +137,8 @@ class BNN_GMM(nn.Module):
             pi, mu, sg = layer_forward_gmm(
                 layer, pi, mu, sg,
                 eps=eps,
-                apply_relu=apply_relu
+                apply_relu=apply_relu,
+                max_components = max_components
             )
 
         return pi, mu, sg
