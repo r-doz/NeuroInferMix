@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 import math
+from representation.operations import layer_forward_gmm
 
 class BayesLinearGMM(nn.Module):
     """
     Fully-connected layer where each scalar weight/bias is a K-component univariate Gaussian mixture.
-    Parameters are stored explicitly as pi/mu/sigma (no softmax/softplus).
     Shapes:
       mu_w, sigma_w, pi_w: (out, in, K)
       mu_b, sigma_b, pi_b: (out, K)
@@ -18,12 +18,10 @@ class BayesLinearGMM(nn.Module):
         self.bias = bias
         self.eps = eps
 
-        # Mixture params for weights
         self.pi_w = nn.Parameter(torch.empty(out_features, in_features, K))
         self.mu_w = nn.Parameter(torch.empty(out_features, in_features, K))
         self.sigma_w = nn.Parameter(torch.empty(out_features, in_features, K))
 
-        # Mixture params for biases
         if bias:
             self.pi_b = nn.Parameter(torch.empty(out_features, K))
             self.mu_b = nn.Parameter(torch.empty(out_features, K))
@@ -37,24 +35,12 @@ class BayesLinearGMM(nn.Module):
 
     @torch.no_grad()
     def reset_parameters(self):
-        """
-        Default init (reasonable, stable):
-          - mu: Xavier/He-like scale for component means
-          - pi: uniform over components
-          - sigma: small positive noise scale
-        If you already have “ok params”, you can overwrite after construction.
-        """
-        # Means: like nn.Linear init but replicated across K with small jitter
         fan_in = self.in_features
         bound = 1.0 / math.sqrt(fan_in)
 
         self.mu_w.uniform_(-bound, bound)
-        self.mu_w.add_(0.01 * torch.randn_like(self.mu_w))  # tiny spread across components
-
-        # Weights: start with uniform mixture
+        self.mu_w.add_(0.01 * torch.randn_like(self.mu_w))
         self.pi_w.fill_(1.0 / self.K)
-
-        # Small positive sigma (scaled to fan_in)
         self.sigma_w.fill_(0.05 * bound)
 
         if self.bias:
@@ -66,22 +52,15 @@ class BayesLinearGMM(nn.Module):
     @torch.no_grad()
     def init_from_deterministic(self, W: torch.Tensor, b: torch.Tensor | None = None,
                                 sigma0: float = 1e-3, main_comp: int = 0):
-        """
-        Useful if you have a trained deterministic net and want to “lift” it to mixtures:
-          - Put W (and b) into one component mean
-          - Give it high weight
-          - Other components get near-zero weight and small random means
-        """
         assert W.shape == (self.out_features, self.in_features)
 
-        # Set all means near 0, then put deterministic weights into one component
         self.mu_w.zero_()
         self.mu_w[..., :] = 0.01 * torch.randn_like(self.mu_w)
         self.mu_w[..., main_comp] = W
 
         self.sigma_w.fill_(sigma0)
 
-        self.pi_w.fill_(self.eps)  # tiny
+        self.pi_w.fill_(self.eps)
         self.pi_w[..., main_comp] = 1.0
         self.pi_w.div_(self.pi_w.sum(dim=-1, keepdim=True))
 
@@ -101,12 +80,8 @@ class BayesLinearGMM(nn.Module):
             self.pi_b.div_(self.pi_b.sum(dim=-1, keepdim=True))
 
 
-
 class BNN_GMM(nn.Module):
     def __init__(self, layer_sizes, K: int, bias: bool = True):
-        """
-        layer_sizes: e.g. [d_in, h1, h2, d_out]
-        """
         super().__init__()
         self.layers = nn.ModuleList([
             BayesLinearGMM(layer_sizes[i], layer_sizes[i+1], K=K, bias=bias)
@@ -115,7 +90,6 @@ class BNN_GMM(nn.Module):
 
     @torch.no_grad()
     def init_from_deterministic_mlp(self, det, sigma0=1e-3, main_comp=0):
-        # det can be an nn.Module OR a list/tuple of nn.Linear
         if isinstance(det, (list, tuple)):
             det_linears = list(det)
         else:
@@ -136,3 +110,34 @@ class BNN_GMM(nn.Module):
                 sigma0=sigma0,
                 main_comp=main_comp
             )
+
+    def forward(self, pi_x, mu_x, sg_x, eps: float | None = None, last_relu: bool = False):
+        """
+        Full mixture forward through all Bayesian layers.
+
+        Inputs:
+          pi_x, mu_x, sg_x: (B, d_in, Kx) or (d_in, Kx)
+
+        Hidden layers: apply ReLU clamp (truncate_0_vectorized)
+        Last layer: no ReLU by default (set last_relu=True if you want it)
+
+        Returns:
+          (pi, mu, sg): (B, d_out, K_out) (or (d_out, K_out) if input unbatched)
+        """
+        if eps is None:
+            eps = self.layers[0].eps if len(self.layers) > 0 else 1e-12
+
+        pi, mu, sg = pi_x, mu_x, sg_x
+
+        L = len(self.layers)
+        for ell, layer in enumerate(self.layers):
+            is_last = (ell == L - 1)
+            apply_relu = (not is_last) or last_relu
+
+            pi, mu, sg = layer_forward_gmm(
+                layer, pi, mu, sg,
+                eps=eps,
+                apply_relu=apply_relu
+            )
+
+        return pi, mu, sg
