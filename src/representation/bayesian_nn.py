@@ -53,28 +53,32 @@ class BayesLinearGMM(nn.Module):
     @torch.no_grad()
     def reset_parameters_normal01(self):
         """
-        Initialize weights so that the effective weight distribution is Normal(0,1).
+        Initialize the effective weight distribution to exactly Normal(0,1):
 
-        - mu_w ~ N(0,1)
-        - sigma_w = 0  (so effective weight equals mu)
-        - pi_w uniform
+            W ~ N(0,1)
+
+        Achieved by:
+            - mu_w = 0
+            - sigma_w = 1
+            - pi_w uniform
 
         Same for bias.
         """
 
-        # Means ~ N(0,1)
-        self.mu_w.normal_(0.0, 1.0)
+        # All component means = 0
+        self.mu_w.zero_()
 
-        # Zero variance so weights are exactly N(0,1)
-        self.sigma_w.zero_()
+        # All component std = 1
+        self.sigma_w.fill_(1.0)
 
-        # Uniform mixture weights
+        # Uniform mixing weights
         self.pi_w.fill_(1.0 / self.K)
 
         if self.bias:
-            self.mu_b.normal_(0.0, 1.0)
-            self.sigma_b.zero_()
+            self.mu_b.zero_()
+            self.sigma_b.fill_(1.0)
             self.pi_b.fill_(1.0 / self.K)
+
 
 
     @torch.no_grad()
