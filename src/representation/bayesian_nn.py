@@ -35,6 +35,7 @@ class BayesLinearGMM(nn.Module):
 
     @torch.no_grad()
     def reset_parameters(self):
+        """Xavier uniform initialization."""
         fan_in = self.in_features
         bound = 1.0 / math.sqrt(fan_in)
 
@@ -48,6 +49,33 @@ class BayesLinearGMM(nn.Module):
             self.mu_b.add_(0.01 * torch.randn_like(self.mu_b))
             self.pi_b.fill_(1.0 / self.K)
             self.sigma_b.fill_(0.05 * bound)
+
+    @torch.no_grad()
+    def reset_parameters_normal01(self):
+        """
+        Initialize weights so that the effective weight distribution is Normal(0,1).
+
+        - mu_w ~ N(0,1)
+        - sigma_w = 0  (so effective weight equals mu)
+        - pi_w uniform
+
+        Same for bias.
+        """
+
+        # Means ~ N(0,1)
+        self.mu_w.normal_(0.0, 1.0)
+
+        # Zero variance so weights are exactly N(0,1)
+        self.sigma_w.zero_()
+
+        # Uniform mixture weights
+        self.pi_w.fill_(1.0 / self.K)
+
+        if self.bias:
+            self.mu_b.normal_(0.0, 1.0)
+            self.sigma_b.zero_()
+            self.pi_b.fill_(1.0 / self.K)
+
 
     @torch.no_grad()
     def init_from_deterministic(self, W: torch.Tensor, b: torch.Tensor | None = None,
@@ -110,6 +138,15 @@ class BNN_GMM(nn.Module):
                 sigma0=sigma0,
                 main_comp=main_comp
             )
+
+    @torch.no_grad()
+    def reset_parameters_normal01_all_layers(self):
+        """
+        Apply Normal(0,1) initialization to all Bayesian layers.
+        """
+        for layer in self.layers:
+            layer.reset_parameters_normal01()
+
 
     def forward(self, pi_x, mu_x, sg_x, eps: float | None = None, last_relu: bool = False, max_components=None):
         """
