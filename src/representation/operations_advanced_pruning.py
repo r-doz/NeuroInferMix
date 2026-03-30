@@ -180,6 +180,61 @@ def gm_product_layer(pi_w, mu_w, sg_w, pi_x, mu_x, sg_x,
     return pi, mu, sg
 
 
+def gm_linear_layer(w, b, pi_x, mu_x, sg_x, eps: float = 1e-12, normalize_pi: bool = True, pack: bool = True, max_components=None):
+        """
+        Compute mixtures for (w_{j,i} * x_i) for all neurons j and inputs i where w_{j,i} is a scalar and x_i is a gaussian mixture.
+
+        Weights:
+            w: (J, I) or (J, I, 1) (scalars)
+            b: (J,) or None
+
+        Inputs:
+            pi_x, mu_x, sg_x: (B, I, Kx)  or (I, Kx) (broadcasts to B=1)
+
+        Returns:
+            pi_out, mu_out, sg_out: (B, J, K_out)   (or packed to <= max_components if enabled)
+        """
+
+        # Promote x to batched: (B, I, Kx)
+        if pi_x.dim() == 2:
+            pi_x = pi_x.unsqueeze(0)
+            mu_x = mu_x.unsqueeze(0)
+            sg_x = sg_x.unsqueeze(0)
+        
+        B, I, Kx = pi_x.shape
+        J = w.shape[0]
+
+        # Vectorized propagation: (B, J, I, Kx)
+        # w: (J, I), pi_x: (B, I, Kx)
+        w_broadcast = w.unsqueeze(0).unsqueeze(-1)  # (1, J, I, 1)
+        mu_x_broadcast = mu_x.unsqueeze(1)          # (B, 1, I, Kx)
+        sg_x_broadcast = sg_x.unsqueeze(1)          # (B, 1, I, Kx)
+        pi_x_broadcast = pi_x.unsqueeze(1)          # (B, 1, I, Kx)
+
+        mu_scaled = mu_x_broadcast * w_broadcast                # (B, J, I, Kx)
+        sg_scaled = sg_x_broadcast * w_broadcast.pow(2)          # (B, J, I, Kx)
+        pi_out = pi_x_broadcast * torch.ones_like(w_broadcast)  # (B, J, I, Kx)
+
+        mu_out = mu_scaled.sum(dim=2)  # (B, J, Kx)
+        sg_out = sg_scaled.sum(dim=2)  # (B, J, Kx)
+        pi_out = pi_out.sum(dim=2)    # (B, J, Kx)
+
+
+        # Add bias if provided
+        if b is not None:
+            mu_out = mu_out + b.view(1, J, 1)
+
+        # Optionally pack/normalize
+        if normalize_pi:
+            if pack:
+                pi_out, mu_out, sg_out = pack_to_kmax(pi_out, mu_out, sg_out, eps=eps, min_components=1, max_components=max_components)
+            else:
+                pi_out = pi_out * (pi_out > eps)
+                pi_out = _safe_renorm(pi_out, dim=-1, eps=eps)
+
+        return pi_out, mu_out, sg_out
+
+
 def sum_over_inputs_tree_layer(pi, mu, sg, eps: float = 1e-12, max_components=None):
     """
     Tree-reduce sum over I dimension:
@@ -242,6 +297,33 @@ def layer_forward_gmm(layer, pi_x, mu_x, sg_x,
         pi_a, mu_a, sg_a = truncate_0_vectorized(pi_z, mu_z, sg_z, eps=eps, pack=True, max_components=max_components)
     else:
         pi_a, mu_a, sg_a = pi_z, mu_z, sg_z
+
+    if unbatched:
+        return pi_a.squeeze(0), mu_a.squeeze(0), sg_a.squeeze(0)
+    return pi_a, mu_a, sg_a
+
+
+def det_layer_forward_gmm(layer, pi_x, mu_x, sg_x,
+                      eps: float = 1e-12, apply_relu: bool = True, max_components=None):
+    """
+    Forward for one DeterministicLinearGMM layer:
+      z = W x + b   (mixture propagation)
+      a = relu(z)   (optional, via truncate_0_vectorized)
+
+    Returns:
+      (pi, mu, sg): (B, out, K_out)  (or (out, K_out) if unbatched input)
+    """
+    unbatched = (pi_x.dim() == 2)
+
+
+    # 1) linear combination (B, out, in, Kw*Kx)
+    pi_y, mu_y, sg_y = gm_linear_layer( layer.W, layer.b, pi_x, mu_x, sg_x, eps=eps, normalize_pi=True, pack=True, max_components=max_components)
+
+    # 2) activation
+    if apply_relu:
+        pi_a, mu_a, sg_a = truncate_0_vectorized(pi_y, mu_y, sg_y, eps=eps, pack=True, max_components=max_components)
+    else:
+        pi_a, mu_a, sg_a = pi_y, mu_y, sg_y
 
     if unbatched:
         return pi_a.squeeze(0), mu_a.squeeze(0), sg_a.squeeze(0)

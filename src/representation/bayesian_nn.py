@@ -84,6 +84,15 @@ class BayesLinearGMM(nn.Module):
     @torch.no_grad()
     def init_from_deterministic(self, W: torch.Tensor, b: torch.Tensor | None = None,
                                 sigma0: float = 1e-3, main_comp: int = 0):
+        """
+        Initialize the Bayesian layer from a deterministic weight matrix and optional bias vector.
+
+        Args:
+            W (torch.Tensor): Deterministic weight matrix of shape (out_features, in_features).
+            b (torch.Tensor | None): Optional deterministic bias vector of shape (out_features,).
+            sigma0 (float): Initial standard deviation for all components.
+            main_comp (int): Index of the main component to initialize with the deterministic values.
+        """
         assert W.shape == (self.out_features, self.in_features)
 
         self.mu_w.zero_()
