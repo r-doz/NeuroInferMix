@@ -87,6 +87,7 @@ def truncate_0_vectorized(pi, mu, sigma, eps: float = 1e-12, pack: bool = True, 
       inputs:  (..., K)
       outputs: (..., K+1)  (last component = delta at 0)
     """
+
     std = Normal(
         torch.tensor(0.0, device=pi.device, dtype=pi.dtype),
         torch.tensor(1.0, device=pi.device, dtype=pi.dtype),
@@ -195,6 +196,7 @@ def gm_linear_layer(w, b, pi_x, mu_x, sg_x, eps: float = 1e-12, normalize_pi: bo
             pi_out, mu_out, sg_out: (B, J, K_out)   (or packed to <= max_components if enabled)
         """
 
+
         # Promote x to batched: (B, I, Kx)
         if pi_x.dim() == 2:
             pi_x = pi_x.unsqueeze(0)
@@ -212,17 +214,13 @@ def gm_linear_layer(w, b, pi_x, mu_x, sg_x, eps: float = 1e-12, normalize_pi: bo
         pi_x_broadcast = pi_x.unsqueeze(1)          # (B, 1, I, Kx)
 
         mu_scaled = mu_x_broadcast * w_broadcast                # (B, J, I, Kx)
-        sg_scaled = sg_x_broadcast * w_broadcast.pow(2)          # (B, J, I, Kx)
-        pi_out = pi_x_broadcast * torch.ones_like(w_broadcast)  # (B, J, I, Kx)
+        sg_scaled = sg_x_broadcast * w_broadcast.abs()          # (B, J, I, Kx)
+        pi_scaled = pi_x_broadcast * torch.ones_like(w_broadcast)  # (B, J, I, Kx)
 
-        mu_out = mu_scaled.sum(dim=2)  # (B, J, Kx)
-        sg_out = sg_scaled.sum(dim=2)  # (B, J, Kx)
-        pi_out = pi_out.sum(dim=2)    # (B, J, Kx)
-
-
-        # Add bias if provided
+        pi_out, mu_out, sg_out = sum_over_inputs_tree_layer(pi_scaled, mu_scaled, sg_scaled, eps=eps, max_components=max_components)
+        
         if b is not None:
-            mu_out = mu_out + b.view(1, J, 1)
+            mu_out = mu_out + b.reshape(1, J, 1)
 
         # Optionally pack/normalize
         if normalize_pi:
@@ -300,6 +298,7 @@ def layer_forward_gmm(layer, pi_x, mu_x, sg_x,
 
     if unbatched:
         return pi_a.squeeze(0), mu_a.squeeze(0), sg_a.squeeze(0)
+    
     return pi_a, mu_a, sg_a
 
 
@@ -317,7 +316,7 @@ def det_layer_forward_gmm(layer, pi_x, mu_x, sg_x,
 
 
     # 1) linear combination (B, out, in, Kw*Kx)
-    pi_y, mu_y, sg_y = gm_linear_layer( layer.W, layer.b, pi_x, mu_x, sg_x, eps=eps, normalize_pi=True, pack=True, max_components=max_components)
+    pi_y, mu_y, sg_y = gm_linear_layer(layer.W, layer.b, pi_x, mu_x, sg_x, eps=eps, normalize_pi=True, pack=True, max_components=max_components)
 
     # 2) activation
     if apply_relu:
@@ -327,4 +326,5 @@ def det_layer_forward_gmm(layer, pi_x, mu_x, sg_x,
 
     if unbatched:
         return pi_a.squeeze(0), mu_a.squeeze(0), sg_a.squeeze(0)
+    
     return pi_a, mu_a, sg_a
